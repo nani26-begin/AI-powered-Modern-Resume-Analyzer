@@ -1,0 +1,890 @@
+# =========================================================
+# 🚀 Modern Resume Analyzer - Enhanced UI Version (with Salary & Animations)
+# =========================================================
+
+# 1️⃣ Install dependencies (uncomment these when running in Colab)
+!pip install -q gradio PyPDF2 python-docx spacy fuzzywuzzy[speedup] python-Levenshtein nltk plotly
+!python -m spacy download en_core_web_sm > /dev/null
+
+# 2️⃣ Imports
+import gradio as gr
+import re
+import PyPDF2
+import docx
+import spacy
+import nltk
+import plotly.graph_objects as go
+
+nltk.download('punkt', quiet=True)
+nltk.download('stopwords', quiet=True)
+nlp = spacy.load("en_core_web_sm")
+
+# 🎨 Custom CSS for subtle animations / hover effects
+custom_css = """
+body { background: radial-gradient(circle at top, #eef2ff 0, #ffffff 55%); }
+
+.header-fade {
+  animation: fadeInDown 0.7s ease-out;
+}
+.fade-in {
+  animation: fadeInUp 0.6s ease-out;
+}
+.card-hover {
+  transition: transform 0.2s ease, box-shadow 0.2s ease;
+}
+.card-hover:hover {
+  transform: translateY(-4px) scale(1.01);
+  box-shadow: 0 12px 25px rgba(15, 23, 42, 0.18);
+}
+.glow-pulse {
+  animation: glowPulse 2s ease-in-out infinite;
+}
+
+@keyframes fadeInUp {
+  from { opacity: 0; transform: translateY(12px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+@keyframes fadeInDown {
+  from { opacity: 0; transform: translateY(-12px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+@keyframes glowPulse {
+  0%   { box-shadow: 0 0 0 rgba(129, 140, 248, 0.0); }
+  50%  { box-shadow: 0 0 25px rgba(129, 140, 248, 0.40); }
+  100% { box-shadow: 0 0 0 rgba(129, 140, 248, 0.0); }
+}
+"""
+
+# 3️⃣ Text Extraction Functions
+def extract_text_from_pdf(file_path):
+    try:
+        with open(file_path, 'rb') as file:
+            reader = PyPDF2.PdfReader(file)
+            text = ""
+            for page in reader.pages:
+                page_text = page.extract_text()
+                if page_text:
+                    text += page_text + "\n"
+            return text.strip()
+    except Exception as e:
+        return f"Error reading PDF: {str(e)}"
+
+def extract_text_from_docx(file_path):
+    try:
+        doc = docx.Document(file_path)
+        text = []
+        for paragraph in doc.paragraphs:
+            if paragraph.text.strip():
+                text.append(paragraph.text)
+        for table in doc.tables:
+            for row in table.rows:
+                for cell in row.cells:
+                    if cell.text.strip():
+                        text.append(cell.text)
+        return "\n".join(text)
+    except Exception as e:
+        return f"Error reading DOCX: {str(e)}"
+
+def extract_text(file):
+    if not file:
+        return ""
+    file_path = file.name
+    if file_path.endswith(".pdf"):
+        return extract_text_from_pdf(file_path)
+    elif file_path.endswith(".docx"):
+        return extract_text_from_docx(file_path)
+    else:
+        try:
+            with open(file_path, 'r', encoding='utf-8') as f:
+                return f.read()
+        except:
+            return "Unsupported file format"
+
+# 4️⃣ Companies and Job Requirements
+TOP_COMPANIES = [
+    "Select a company", "Google", "Microsoft", "Amazon", "Apple", "Meta (Facebook)",
+    "Netflix", "Tesla", "IBM", "Oracle", "Salesforce", "Adobe", "Intel", "NVIDIA",
+    "Spotify", "Uber", "TCS", "Infosys", "Capgemini", "HCL Technologies"
+]
+
+JOB_REQUIREMENTS = {
+    "Data Scientist": {
+        "skills": {
+            "Programming": ["Python", "R", "SQL", "Julia"],
+            "ML/DL": ["Scikit-learn", "TensorFlow", "PyTorch", "Keras", "XGBoost"],
+            "Data Processing": ["Pandas", "NumPy", "SciPy", "Dask"],
+            "Visualization": ["Matplotlib", "Seaborn", "Plotly", "Tableau", "Power BI"],
+            "Big Data": ["Spark", "Hadoop", "Hive"],
+            "Cloud": ["AWS", "GCP", "Azure"],
+            "Statistics": ["Statistical Modeling", "A/B Testing", "Hypothesis Testing"]
+        },
+        "experience_keywords": ["machine learning", "data analysis", "statistical modeling"],
+        "action_verbs": ["analyzed", "developed", "built", "optimized", "predicted", "modeled"]
+    },
+    "Machine Learning Engineer": {
+        "skills": {
+            "Programming": ["Python", "C++", "Java", "Scala"],
+            "ML Frameworks": ["TensorFlow", "PyTorch", "Scikit-learn", "Keras"],
+            "MLOps": ["MLflow", "Kubeflow", "Docker", "Kubernetes"],
+            "Cloud": ["AWS SageMaker", "GCP AI Platform", "Azure ML"],
+            "Data": ["Pandas", "NumPy", "Spark"],
+            "Deployment": ["Flask", "FastAPI", "REST API", "GraphQL"]
+        },
+        "experience_keywords": ["model deployment", "ml pipeline", "feature engineering"],
+        "action_verbs": ["deployed", "engineered", "optimized", "scaled", "automated"]
+    },
+    "Software Developer": {
+        "skills": {
+            "Programming": ["Python", "Java", "C++", "JavaScript", "C#", "Go"],
+            "Web": ["React", "Angular", "Vue.js", "Node.js", "HTML", "CSS"],
+            "Backend": ["Django", "Flask", "Spring Boot", "Express.js"],
+            "Database": ["SQL", "MySQL", "PostgreSQL", "MongoDB", "Redis"],
+            "DevOps": ["Docker", "Kubernetes", "Jenkins", "CI/CD"],
+            "Cloud": ["AWS", "Azure", "GCP"]
+        },
+        "experience_keywords": ["software development", "application development"],
+        "action_verbs": ["developed", "built", "designed", "implemented", "engineered"]
+    },
+    "Web Developer": {
+        "skills": {
+            "Frontend": ["HTML5", "CSS3", "JavaScript", "TypeScript", "React", "Vue.js"],
+            "Backend": ["Node.js", "Python", "PHP", "Django", "Flask"],
+            "Database": ["MySQL", "PostgreSQL", "MongoDB"],
+            "Tools": ["Git", "Webpack", "npm"],
+            "Design": ["Responsive Design", "UI/UX", "Bootstrap", "Tailwind CSS"]
+        },
+        "experience_keywords": ["web development", "frontend development"],
+        "action_verbs": ["developed", "designed", "built", "created", "implemented"]
+    },
+    "Data Analyst": {
+        "skills": {
+            "Programming": ["Python", "R", "SQL"],
+            "BI Tools": ["Tableau", "Power BI", "Looker", "QlikView"],
+            "Excel": ["Advanced Excel", "Pivot Tables", "VBA"],
+            "Database": ["SQL", "MySQL", "PostgreSQL"],
+            "Visualization": ["Matplotlib", "Seaborn", "Plotly"]
+        },
+        "experience_keywords": ["data analysis", "business intelligence", "reporting"],
+        "action_verbs": ["analyzed", "visualized", "reported", "identified"]
+    },
+    "DevOps Engineer": {
+        "skills": {
+            "Cloud": ["AWS", "Azure", "GCP"],
+            "Containers": ["Docker", "Kubernetes", "Podman"],
+            "CI/CD": ["Jenkins", "GitLab CI", "GitHub Actions", "CircleCI"],
+            "IaC": ["Terraform", "Ansible", "CloudFormation"],
+            "Monitoring": ["Prometheus", "Grafana", "ELK Stack"]
+        },
+        "experience_keywords": ["devops", "automation", "infrastructure"],
+        "action_verbs": ["automated", "deployed", "configured", "monitored"]
+    },
+    "Full Stack Developer": {
+        "skills": {
+            "Frontend": ["React", "Angular", "Vue.js", "JavaScript", "TypeScript"],
+            "Backend": ["Node.js", "Python", "Java", "Django", "Flask"],
+            "Database": ["MongoDB", "PostgreSQL", "MySQL", "Redis"],
+            "Cloud": ["AWS", "Azure", "GCP"],
+            "DevOps": ["Docker", "Kubernetes", "Git"]
+        },
+        "experience_keywords": ["full stack development", "web applications"],
+        "action_verbs": ["developed", "built", "designed", "implemented", "integrated"]
+    },
+    "AI/ML Researcher": {
+        "skills": {
+            "Programming": ["Python", "C++", "MATLAB"],
+            "Deep Learning": ["PyTorch", "TensorFlow", "JAX"],
+            "Research": ["Research Methodology", "Paper Writing"],
+            "Math": ["Linear Algebra", "Calculus", "Probability", "Statistics"],
+            "NLP": ["Transformers", "BERT", "GPT", "Hugging Face"],
+            "Computer Vision": ["OpenCV", "YOLO", "CNNs"]
+        },
+        "experience_keywords": ["research", "publications", "neural networks"],
+        "action_verbs": ["researched", "published", "developed", "experimented"]
+    }
+}
+
+# 💰 Approximate salary bands (India, in LPA) per role & experience bucket
+SALARY_DATA = {
+    "Data Scientist": {
+        "0-1": (5, 9),
+        "1-3": (9, 18),
+        "3-5": (18, 30),
+        "5-8": (30, 45),
+        "8+": (45, 65),
+    },
+    "Machine Learning Engineer": {
+        "0-1": (6, 10),
+        "1-3": (10, 20),
+        "3-5": (20, 32),
+        "5-8": (32, 50),
+        "8+": (50, 70),
+    },
+    "Software Developer": {
+        "0-1": (4, 8),
+        "1-3": (8, 15),
+        "3-5": (15, 25),
+        "5-8": (25, 40),
+        "8+": (40, 60),
+    },
+    "Web Developer": {
+        "0-1": (3, 6),
+        "1-3": (6, 12),
+        "3-5": (12, 20),
+        "5-8": (20, 30),
+        "8+": (30, 45),
+    },
+    "Data Analyst": {
+        "0-1": (3.5, 7),
+        "1-3": (7, 13),
+        "3-5": (13, 22),
+        "5-8": (22, 32),
+        "8+": (32, 45),
+    },
+    "DevOps Engineer": {
+        "0-1": (5, 9),
+        "1-3": (9, 16),
+        "3-5": (16, 28),
+        "5-8": (28, 42),
+        "8+": (42, 60),
+    },
+    "Full Stack Developer": {
+        "0-1": (4.5, 8.5),
+        "1-3": (8.5, 16),
+        "3-5": (16, 26),
+        "5-8": (26, 40),
+        "8+": (40, 58),
+    },
+    "AI/ML Researcher": {
+        "0-1": (6, 11),
+        "1-3": (11, 22),
+        "3-5": (22, 35),
+        "5-8": (35, 50),
+        "8+": (50, 75),
+    },
+}
+
+# 5️⃣ Analysis Functions
+def extract_contact_info(text):
+    contact = {}
+    emails = re.findall(r'\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Z|a-z]{2,}\b', text)
+    contact['emails'] = list(set(emails))
+    
+    phones = re.findall(r'[\+]?[(]?[0-9]{1,3}[)]?[-\s\.]?[(]?[0-9]{1,4}[)]?[-\s\.]?[0-9]{1,4}[-\s\.]?[0-9]{1,9}', text)
+    contact['phones'] = list(set([p.strip() for p in phones if len(p.replace('-', '').replace(' ', '').replace('+', '')) >= 10]))
+    
+    linkedin = re.findall(r'linkedin\.com/in/[\w-]+', text.lower())
+    contact['linkedin'] = list(set(linkedin))
+    
+    github = re.findall(r'github\.com/[\w-]+', text.lower())
+    contact['github'] = list(set(github))
+    
+    portfolio = re.findall(r'(portfolio|website)[:\s]*(https?://[^\s]+)', text.lower())
+    contact['portfolio'] = [p[1] for p in portfolio]
+    
+    doc = nlp(text[:1000])
+    names = [ent.text for ent in doc.ents if ent.label_ == "PERSON"]
+    contact['name'] = names[0] if names else "Not detected"
+    
+    return contact
+
+def detect_section(text, section_keywords):
+    text_lower = text.lower()
+    return any(keyword in text_lower for keyword in section_keywords)
+
+def extract_skills(text, job_role):
+    if job_role not in JOB_REQUIREMENTS:
+        return {"found": [], "missing": [], "total": 0}
+    
+    text_lower = text.lower()
+    all_skills = []
+    found_skills = []
+    missing_skills = []
+    
+    for category, skills in JOB_REQUIREMENTS[job_role]["skills"].items():
+        for skill in skills:
+            all_skills.append(skill)
+            if skill.lower() in text_lower:
+                found_skills.append(skill)
+            else:
+                missing_skills.append(skill)
+    
+    return {"found": found_skills, "missing": missing_skills, "total": len(all_skills)}
+
+def count_action_verbs(text, job_role):
+    if job_role not in JOB_REQUIREMENTS:
+        return 0
+    text_lower = text.lower()
+    verbs = JOB_REQUIREMENTS[job_role]["action_verbs"]
+    return sum(text_lower.count(verb) for verb in verbs)
+
+def detect_quantifiable_results(text):
+    numbers = re.findall(r'\d+[%]?', text)
+    return len(numbers)
+
+def calculate_scores(text, job_role, contact):
+    scores = {}
+    
+    # Contact score
+    contact_score = 0
+    if contact['name'] != "Not detected": contact_score += 20
+    if contact['emails']: contact_score += 25
+    if contact['phones']: contact_score += 20
+    if contact['linkedin']: contact_score += 20
+    if contact['github'] or contact['portfolio']: contact_score += 15
+    scores['contact'] = min(contact_score, 100)
+    
+    # Summary
+    has_summary = detect_section(text, ['summary', 'objective', 'profile', 'about'])
+    summary_length = len(text[:500].split())
+    scores['summary'] = 100 if has_summary and summary_length > 20 else (50 if has_summary else 0)
+    
+    # Skills
+    skills_data = extract_skills(text, job_role)
+    if skills_data['total'] > 0:
+        scores['skills'] = int((len(skills_data['found']) / skills_data['total']) * 100)
+    else:
+        scores['skills'] = 50
+    
+    # Education
+    has_education = detect_section(text, ['education', 'degree', 'university', 'college', 'bachelor', 'master'])
+    scores['education'] = 100 if has_education else 0
+    
+    # Projects
+    has_projects = detect_section(text, ['project', 'github', 'portfolio'])
+    project_count = text.lower().count('project')
+    scores['projects'] = min(100, 30 + project_count * 20) if has_projects else 0
+    
+    # Experience (based on text content)
+    has_experience = detect_section(text, ['experience', 'work', 'employment', 'internship'])
+    action_verbs = count_action_verbs(text, job_role)
+    scores['experience'] = min(100, 40 + action_verbs * 10) if has_experience else 0
+    
+    # Certifications
+    has_certs = detect_section(text, ['certification', 'certificate', 'coursera', 'udemy', 'datacamp'])
+    scores['certifications'] = 100 if has_certs else 0
+    
+    # Impact (numbers / metrics)
+    num_count = detect_quantifiable_results(text)
+    scores['impact'] = min(100, num_count * 10)
+    
+    # Overall weighted score
+    weights = {
+        'contact': 0.10,
+        'summary': 0.10,
+        'skills': 0.25,
+        'education': 0.10,
+        'projects': 0.15,
+        'experience': 0.20,
+        'certifications': 0.05,
+        'impact': 0.05
+    }
+    overall = sum(scores[key] * weights[key] for key in weights)
+    scores['overall'] = int(overall)
+    
+    return scores
+
+def generate_suggestions(text, job_role, contact, scores):
+    suggestions = []
+    
+    if scores['contact'] < 100:
+        missing_contact = []
+        if contact['name'] == "Not detected": missing_contact.append("full name")
+        if not contact['emails']: missing_contact.append("email")
+        if not contact['phones']: missing_contact.append("phone number")
+        if not contact['linkedin']: missing_contact.append("LinkedIn profile")
+        if not contact['github'] and not contact['portfolio']: missing_contact.append("GitHub/Portfolio")
+        if missing_contact:
+            suggestions.append(f"**Contact Info:** Add {', '.join(missing_contact)}.")
+    
+    if scores['summary'] < 80:
+        suggestions.append(f"**Professional Summary:** Add a 2–3 line summary tailored for the **{job_role}** role.")
+    
+    if scores['skills'] < 70:
+        skills_data = extract_skills(text, job_role)
+        top_missing = skills_data['missing'][:5]
+        if top_missing:
+            suggestions.append(f"**Skills:** Highlight more relevant skills such as: {', '.join(top_missing)}.")
+    
+    if scores['projects'] < 60:
+        suggestions.append("**Projects:** Include 2–3 relevant projects with tech stack, your role, and measurable outcomes.")
+    
+    if scores['experience'] < 60:
+        suggestions.append("**Experience:** Use more strong action verbs and focus on achievements instead of responsibilities.")
+    
+    if scores['impact'] < 50:
+        suggestions.append("**Quantifiable Results:** Add metrics like percentages, revenue impact, time saved, or users impacted.")
+    
+    if scores['certifications'] == 0:
+        suggestions.append("**Certifications:** Add 1–2 relevant certifications (e.g., Coursera, Udemy, AWS, Azure, etc.).")
+    
+    return suggestions
+
+# 💰 Salary Estimation Helpers
+def get_experience_bucket(years):
+    if years is None or years <= 1:
+        return "0-1"
+    elif years <= 3:
+        return "1-3"
+    elif years <= 5:
+        return "3-5"
+    elif years <= 8:
+        return "5-8"
+    else:
+        return "8+"
+
+def get_company_multiplier(company):
+    if not company or company == "Select a company":
+        return 1.0
+    company = company.lower()
+    tier1 = ["google", "microsoft", "amazon", "apple", "meta", "facebook", "netflix", "tesla", "nvidia"]
+    tier2 = ["adobe", "intel", "uber", "spotify", "ibm", "oracle", "salesforce"]
+    service = ["tcs", "infosys", "capgemini", "hcl technologies", "hcl"]
+    
+    if any(c in company for c in tier1):
+        return 1.3
+    if any(c in company for c in tier2):
+        return 1.15
+    if any(c in company for c in service):
+        return 0.9
+    return 1.0
+
+def estimate_salary(job_title, company, years_exp):
+    if job_title not in SALARY_DATA:
+        base_role = "Software Developer"
+    else:
+        base_role = job_title
+    
+    bucket = get_experience_bucket(years_exp if years_exp is not None else 0)
+    base_range = SALARY_DATA[base_role].get(bucket, SALARY_DATA[base_role]["1-3"])
+    multiplier = get_company_multiplier(company)
+    
+    low = round(base_range[0] * multiplier, 1)
+    high = round(base_range[1] * multiplier, 1)
+    
+    return low, high
+
+# 6️⃣ Visualization Functions
+def create_score_chart(scores):
+    categories = ['Contact', 'Summary', 'Skills', 'Education', 'Projects', 'Experience', 'Certifications', 'Impact']
+    values = [
+        scores['contact'], scores['summary'], scores['skills'], scores['education'],
+        scores['projects'], scores['experience'], scores['certifications'], scores['impact']
+    ]
+    
+    fig = go.Figure()
+    fig.add_trace(go.Scatterpolar(
+        r=values,
+        theta=categories,
+        fill='toself',
+        name='Your Resume',
+        line=dict(color='#6366f1', width=3),
+        fillcolor='rgba(99, 102, 241, 0.4)'
+    ))
+    
+    fig.update_layout(
+        polar=dict(radialaxis=dict(visible=True, range=[0, 100])),
+        showlegend=False,
+        title={'text': "Resume Section Analysis", 'x': 0.5, 'xanchor': 'center'},
+        height=450
+    )
+    return fig
+
+def create_overall_score_gauge(overall_score):
+    fig = go.Figure(go.Indicator(
+        mode="gauge+number",
+        value=overall_score,
+        title={'text': "Overall Resume Score"},
+        gauge={
+            'axis': {'range': [None, 100]},
+            'bar': {'color': "#6366f1"},
+            'steps': [
+                {'range': [0, 50], 'color': '#fee2e2'},
+                {'range': [50, 75], 'color': '#fef3c7'},
+                {'range': [75, 100], 'color': '#d1fae5'}
+            ],
+            'threshold': {'line': {'color': "#ef4444", 'width': 5}, 'value': 90}
+        }
+    ))
+    fig.update_layout(height=350)
+    return fig
+
+# 7️⃣ Report Generation Functions
+def generate_analysis_report(contact, company, job_title):
+    report = f"""
+<div class="fade-in">
+<div class="card-hover" style="background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); padding: 25px; border-radius: 15px; margin-bottom: 20px; box-shadow: 0 8px 20px rgba(0,0,0,0.15);">
+    <h2 style="color: white; margin: 0; font-size: 28px; text-align: center;">📊 Resume Analysis Report</h2>
+    <p style="color: #e5e7eb; margin-top: 8px; text-align: center;">
+        Targeting <strong>{job_title}</strong> {f"role at <strong>{company}</strong>" if company and company != "Select a company" else "role"}
+    </p>
+</div>
+
+<div class="card-hover" style="background: white; padding: 25px; border-radius: 12px; box-shadow: 0 4px 12px rgba(0,0,0,0.08);">
+    <h3 style="color: #667eea; border-bottom: 3px solid #667eea; padding-bottom: 10px;">👤 Contact Information</h3>
+    
+    <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(250px, 1fr)); gap: 15px; margin-top: 20px;">
+        <div style="background: #f8f9fa; padding: 15px; border-radius: 10px; border-left: 4px solid #667eea;">
+            <strong style="color: #667eea;">Name:</strong><br>
+            <span style="font-size: 16px; color: #1f2937;">{contact['name']}</span>
+        </div>
+        <div style="background: #f8f9fa; padding: 15px; border-radius: 10px; border-left: 4px solid #667eea;">
+            <strong style="color: #667eea;">Email:</strong><br>
+            <span style="font-size: 16px; color: #1f2937;">{', '.join(contact['emails']) if contact['emails'] else '❌ Not found'}</span>
+        </div>
+        <div style="background: #f8f9fa; padding: 15px; border-radius: 10px; border-left: 4px solid #667eea;">
+            <strong style="color: #667eea;">Phone:</strong><br>
+            <span style="font-size: 16px; color: #1f2937;">{', '.join(contact['phones']) if contact['phones'] else '❌ Not found'}</span>
+        </div>
+        <div style="background: #f8f9fa; padding: 15px; border-radius: 10px; border-left: 4px solid #667eea;">
+            <strong style="color: #667eea;">LinkedIn:</strong><br>
+            <span style="font-size: 16px; color: #1f2937;">{', '.join(contact['linkedin']) if contact['linkedin'] else '❌ Not found'}</span>
+        </div>
+        <div style="background: #f8f9fa; padding: 15px; border-radius: 10px; border-left: 4px solid #667eea;">
+            <strong style="color: #667eea;">GitHub/Portfolio:</strong><br>
+            <span style="font-size: 16px; color: #1f2937;">{', '.join(contact['github'] + contact['portfolio']) if (contact['github'] or contact['portfolio']) else '❌ Not found'}</span>
+        </div>
+    </div>
+</div>
+</div>
+"""
+    return report
+
+def generate_skills_analysis(job_title, skills_data, scores):
+    overall_status = (
+        '🏆 Excellent! Your resume is strong and well-aligned with the target role.'
+        if scores['overall'] >= 80
+        else '👍 Good! With a few improvements, your resume can become outstanding.'
+        if scores['overall'] >= 60
+        else '⚠️ Needs Improvement – follow the suggestions below to strengthen your resume.'
+    )
+    
+    def get_status_badge(score):
+        if score >= 80:
+            return '<span style="background: #10b981; color: white; padding: 5px 12px; border-radius: 20px;">✅ Excellent</span>'
+        elif score >= 60:
+            return '<span style="background: #f59e0b; color: white; padding: 5px 12px; border-radius: 20px;">👍 Good</span>'
+        else:
+            return '<span style="background: #ef4444; color: white; padding: 5px 12px; border-radius: 20px;">❌ Needs Work</span>'
+    
+    skills_found_html = ""
+    if skills_data['found']:
+        for skill in skills_data['found'][:20]:
+            skills_found_html += f'<span style="background: #dbeafe; color: #1e40af; padding: 6px 12px; border-radius: 20px; margin: 4px; display: inline-block;">{skill}</span>'
+    else:
+        skills_found_html = '<p style="color: #6b7280;">No matching skills detected for the selected role.</p>'
+    
+    skills_missing_html = ""
+    if skills_data['missing']:
+        for skill in skills_data['missing'][:15]:
+            skills_missing_html += f'<span style="background: #fee2e2; color: #991b1b; padding: 6px 12px; border-radius: 20px; margin: 4px; display: inline-block;">{skill}</span>'
+    else:
+        skills_missing_html = '<p style="color: #10b981;">All key skills present! 🎉</p>'
+    
+    report = f"""
+<div class="fade-in">
+<div class="card-hover" style="background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); padding: 20px; border-radius: 15px; margin-bottom: 20px; text-align: center;">
+    <h2 style="color: white; margin: 0;">🎯 Target Role: {job_title}</h2>
+</div>
+
+<div class="card-hover" style="background: white; padding: 25px; border-radius: 12px; box-shadow: 0 4px 12px rgba(0,0,0,0.08); margin-bottom: 20px;">
+    <h3 style="color: #667eea; border-bottom: 3px solid #667eea; padding-bottom: 10px;">✅ Skills Analysis</h3>
+    <div style="margin-top: 20px;">
+        <h4 style="color: #1f2937;">Found Skills ({len(skills_data['found'])}/{skills_data['total']})</h4>
+        <div style="line-height: 2; margin-top: 10px;">{skills_found_html}</div>
+    </div>
+    <div style="margin-top: 25px;">
+        <h4 style="color: #1f2937;">⚠️ Missing Key Skills</h4>
+        <div style="line-height: 2; margin-top: 10px;">{skills_missing_html}</div>
+    </div>
+</div>
+
+<div class="card-hover glow-pulse" style="background: white; padding: 25px; border-radius: 12px; box-shadow: 0 4px 12px rgba(0,0,0,0.08); margin-bottom: 20px;">
+    <h3 style="color: #667eea; border-bottom: 3px solid #667eea; padding-bottom: 10px;">📈 Section Scores</h3>
+    <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(250px, 1fr)); gap: 15px; margin-top: 20px;">
+        <div style="background: #f3f4f6; padding: 18px; border-radius: 12px;">
+            <div style="font-weight: bold; color: #374151; margin-bottom: 8px;">Contact Information</div>
+            <div style="font-size: 28px; font-weight: bold; color: #667eea; margin-bottom: 8px;">{scores['contact']}/100</div>
+            {get_status_badge(scores['contact'])}
+        </div>
+        <div style="background: #f3f4f6; padding: 18px; border-radius: 12px;">
+            <div style="font-weight: bold; color: #374151; margin-bottom: 8px;">Professional Summary</div>
+            <div style="font-size: 28px; font-weight: bold; color: #667eea; margin-bottom: 8px;">{scores['summary']}/100</div>
+            {get_status_badge(scores['summary'])}
+        </div>
+        <div style="background: #f3f4f6; padding: 18px; border-radius: 12px;">
+            <div style="font-weight: bold; color: #374151; margin-bottom: 8px;">Skills Match</div>
+            <div style="font-size: 28px; font-weight: bold; color: #667eea; margin-bottom: 8px;">{scores['skills']}/100</div>
+            {get_status_badge(scores['skills'])}
+        </div>
+        <div style="background: #f3f4f6; padding: 18px; border-radius: 12px;">
+            <div style="font-weight: bold; color: #374151; margin-bottom: 8px;">Education</div>
+            <div style="font-size: 28px; font-weight: bold; color: #667eea; margin-bottom: 8px;">{scores['education']}/100</div>
+            {get_status_badge(scores['education'])}
+        </div>
+        <div style="background: #f3f4f6; padding: 18px; border-radius: 12px;">
+            <div style="font-weight: bold; color: #374151; margin-bottom: 8px;">Projects</div>
+            <div style="font-size: 28px; font-weight: bold; color: #667eea; margin-bottom: 8px;">{scores['projects']}/100</div>
+            {get_status_badge(scores['projects'])}
+        </div>
+        <div style="background: #f3f4f6; padding: 18px; border-radius: 12px;">
+            <div style="font-weight: bold; color: #374151; margin-bottom: 8px;">Experience</div>
+            <div style="font-size: 28px; font-weight: bold; color: #667eea; margin-bottom: 8px;">{scores['experience']}/100</div>
+            {get_status_badge(scores['experience'])}
+        </div>
+        <div style="background: #f3f4f6; padding: 18px; border-radius: 12px;">
+            <div style="font-weight: bold; color: #374151; margin-bottom: 8px;">Certifications</div>
+            <div style="font-size: 28px; font-weight: bold; color: #667eea; margin-bottom: 8px;">{scores['certifications']}/100</div>
+            {get_status_badge(scores['certifications'])}
+        </div>
+        <div style="background: #f3f4f6; padding: 18px; border-radius: 12px;">
+            <div style="font-weight: bold; color: #374151; margin-bottom: 8px;">Quantifiable Impact</div>
+            <div style="font-size: 28px; font-weight: bold; color: #667eea; margin-bottom: 8px;">{scores['impact']}/100</div>
+            {get_status_badge(scores['impact'])}
+        </div>
+    </div>
+</div>
+
+<div class="card-hover" style="background: linear-gradient(135deg, #10b981 0%, #059669 100%); padding: 25px; border-radius: 15px; text-align: center; color: white;">
+    <h3 style="margin: 0 0 10px 0;">🎯 Overall Resume Score</h3>
+    <div style="font-size: 48px; font-weight: bold; margin: 10px 0;">{scores['overall']}/100</div>
+    <p style="margin: 10px 0 0 0;">{overall_status}</p>
+</div>
+</div>
+"""
+    return report
+
+def generate_improvements(job_title, suggestions):
+    # Suggestions list
+    suggestions_html = ""
+    if suggestions:
+        for i, sug in enumerate(suggestions):
+            suggestions_html += f"""
+            <div class="card-hover" style="background: white; padding: 18px; border-radius: 10px; margin-bottom: 15px; border-left: 5px solid #667eea; box-shadow: 0 2px 8px rgba(0,0,0,0.08);">
+                <div style="font-size: 18px; font-weight: bold; color: #667eea; margin-bottom: 8px;">💡 Suggestion {i+1}</div>
+                <p style="color: #374151; margin: 0;">{sug}</p>
+            </div>
+            """
+    else:
+        suggestions_html = """
+        <div class="card-hover" style="background: #d1fae5; padding: 25px; border-radius: 12px; text-align: center;">
+            <div style="font-size: 48px;">🎉</div>
+            <h3 style="color: #065f46;">Your resume looks great!</h3>
+            <p style="color: #047857;">No major improvements needed.</p>
+        </div>
+        """
+    
+    # Pro tips
+    pro_tips = [
+        "Tailor your resume to include keywords from the specific job description.",
+        "Start bullet points with strong action verbs (Developed, Built, Implemented, Optimized).",
+        "Quantify achievements with numbers and percentages wherever possible.",
+        "Keep formatting clean, consistent, and easy to scan for recruiters.",
+        "Ensure ATS compatibility by avoiding tables, text boxes, and images for key content.",
+        "Proofread thoroughly to avoid grammar and spelling mistakes."
+    ]
+    
+    tips_html = ""
+    for tip in pro_tips:
+        tips_html += f"""
+        <div class="card-hover" style="background: #f3f4f6; padding: 15px; border-radius: 10px; margin-bottom: 12px; border-left: 4px solid #f59e0b;">
+            <p style="color: #374151; margin: 0;">{tip}</p>
+        </div>
+        """
+    
+    report = f"""
+<div class="fade-in">
+<div class="card-hover" style="background: linear-gradient(135deg, #f97316 0%, #ec4899 100%); padding: 20px; border-radius: 15px; margin-bottom: 20px; text-align: center;">
+    <h2 style="color: white; margin: 0;">🛠 Improvement Suggestions for {job_title}</h2>
+</div>
+
+<div style="background: #f9fafb; padding: 20px; border-radius: 12px; box-shadow: 0 4px 10px rgba(0,0,0,0.06); margin-bottom: 20px;">
+    <h3 style="color: #111827; margin-bottom: 15px;">🎯 Focused Suggestions</h3>
+    {suggestions_html}
+</div>
+
+<div style="background: #ffffff; padding: 20px; border-radius: 12px; box-shadow: 0 4px 10px rgba(0,0,0,0.06);">
+    <h3 style="color: #111827; margin-bottom: 15px;">📌 Pro Tips for a Strong Resume</h3>
+    {tips_html}
+</div>
+</div>
+"""
+    return report
+
+def generate_salary_report(job_title, company, years_exp, expected_salary, salary_low, salary_high):
+    exp_text = f"{years_exp:.1f}" if years_exp is not None else "0"
+    company_text = company if company and company != "Select a company" else "this role"
+    
+    # Compare expectation with range
+    badge_html = ""
+    note = ""
+    if expected_salary is None or expected_salary == 0:
+        expectation_text = "<span style='color:#6b7280;'>Not provided</span>"
+        note = "You didn’t provide an expected salary. Use this range as a reference when negotiating."
+        badge_html = '<span style="background:#e5e7eb;color:#111827;padding:4px 10px;border-radius:999px;font-size:12px;">No expectation set</span>'
+    else:
+        expectation_text = f"{expected_salary:.1f} LPA"
+        if expected_salary < salary_low:
+            note = "Your expectation is **below** the typical market range for this profile. You might be undervaluing yourself."
+            badge_html = '<span style="background:#22c55e;color:white;padding:4px 10px;border-radius:999px;font-size:12px;">Below market</span>'
+        elif expected_salary > salary_high * 1.15:
+            note = "Your expectation is **significantly above** the typical market range. Make sure your skills and portfolio clearly justify this."
+            badge_html = '<span style="background:#ef4444;color:white;padding:4px 10px;border-radius:999px;font-size:12px;">Above market</span>'
+        elif expected_salary > salary_high:
+            note = "Your expectation is **slightly above** the common range. This can still be fine if you show strong impact and niche skills."
+            badge_html = '<span style="background:#fb923c;color:white;padding:4px 10px;border-radius:999px;font-size:12px;">Slightly above</span>'
+        else:
+            note = "Your expectation is **within** the typical market range. This is a reasonable range for your profile."
+            badge_html = '<span style="background:#3b82f6;color:white;padding:4px 10px;border-radius:999px;font-size:12px;">In range</span>'
+    
+    report = f"""
+<div class="fade-in">
+<div class="card-hover" style="background: linear-gradient(135deg, #2563eb 0%, #7c3aed 100%); padding: 20px; border-radius: 15px; margin-bottom: 20px; text-align: center; color: white;">
+    <h2 style="margin: 0;">💰 Salary Insights</h2>
+    <p style="margin-top: 6px;">Based on your target role, company, and experience in the Indian market (LPA)</p>
+</div>
+
+<div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(260px,1fr));gap:16px;margin-bottom:20px;">
+    <div class="card-hover" style="background:#ffffff;padding:18px;border-radius:12px;box-shadow:0 3px 10px rgba(15,23,42,0.08);">
+        <h4 style="margin:0 0 8px 0;color:#4b5563;">Role & Company</h4>
+        <p style="margin:0;font-size:15px;color:#111827;"><strong>{job_title}</strong> at <strong>{company_text}</strong></p>
+        <p style="margin:6px 0 0 0;font-size:14px;color:#6b7280;">Experience: <strong>{exp_text} years</strong></p>
+    </div>
+    <div class="card-hover" style="background:#eef2ff;padding:18px;border-radius:12px;box-shadow:0 3px 10px rgba(129,140,248,0.35);">
+        <h4 style="margin:0 0 8px 0;color:#4338ca;">Recommended Range</h4>
+        <p style="margin:0;font-size:22px;font-weight:700;color:#312e81;">{salary_low:.1f} – {salary_high:.1f} LPA</p>
+        <p style="margin:6px 0 0 0;font-size:13px;color:#4b5563;">(Approximate CTC based on role, experience bracket, and company tier)</p>
+    </div>
+    <div class="card-hover" style="background:#ffffff;padding:18px;border-radius:12px;box-shadow:0 3px 10px rgba(15,23,42,0.08);">
+        <h4 style="margin:0 0 8px 0;color:#4b5563;">Your Expected Salary</h4>
+        <p style="margin:0;font-size:20px;font-weight:700;color:#111827;">{expectation_text}</p>
+        <div style="margin-top:8px;">{badge_html}</div>
+    </div>
+</div>
+
+<div class="card-hover" style="background:#f9fafb;padding:18px;border-radius:12px;box-shadow:0 3px 10px rgba(15,23,42,0.06);">
+    <h4 style="margin:0 0 8px 0;color:#111827;">📌 Insight</h4>
+    <p style="margin:0;font-size:14px;color:#374151;">{note}</p>
+    <p style="margin-top:10px;font-size:13px;color:#6b7280;">Tip: Align your expected salary with your skills, portfolio strength, and company level. Strong projects, open-source work, and measurable impact can justify the higher end of the range.</p>
+</div>
+</div>
+"""
+    return report
+
+# 8️⃣ Main Analysis Function
+def analyze_resume(file, company, job_title, years_exp, expected_salary):
+    if not file:
+        error_html = """
+        <div class="fade-in card-hover" style="background: #fee2e2; padding: 20px; border-radius: 12px; color: #991b1b; text-align: center;">
+            <h3>No file uploaded</h3>
+            <p>Please upload a resume in PDF, DOCX, or TXT format to analyze.</p>
+        </div>
+        """
+        return error_html, "", "", "", None, None
+    
+    text = extract_text(file)
+    
+    if text.startswith("Error") or text.startswith("Unsupported"):
+        error_html = f"""
+        <div class="fade-in card-hover" style="background: #fee2e2; padding: 20px; border-radius: 12px; color: #991b1b; text-align: center;">
+            <h3>File Error</h3>
+            <p>{text}</p>
+        </div>
+        """
+        return error_html, "", "", "", None, None
+    
+    if job_title not in JOB_REQUIREMENTS:
+        job_title = "Data Scientist"
+    
+    contact = extract_contact_info(text)
+    scores = calculate_scores(text, job_title, contact)
+    suggestions = generate_suggestions(text, job_title, contact, scores)
+    skills_data = extract_skills(text, job_title)
+    
+    salary_low, salary_high = estimate_salary(job_title, company, years_exp or 0)
+    
+    contact_html = generate_analysis_report(contact, company, job_title)
+    skills_html = generate_skills_analysis(job_title, skills_data, scores)
+    improvements_html = generate_improvements(job_title, suggestions)
+    salary_html = generate_salary_report(job_title, company, years_exp, expected_salary, salary_low, salary_high)
+    
+    radar_chart = create_score_chart(scores)
+    gauge_chart = create_overall_score_gauge(scores["overall"])
+    
+    return contact_html, skills_html, improvements_html, salary_html, radar_chart, gauge_chart
+
+# 9️⃣ Gradio UI
+with gr.Blocks(theme=gr.themes.Soft(), css=custom_css, title="Modern Resume Analyzer") as demo:
+    gr.Markdown(
+        """
+        <div class="header-fade" style="text-align: center; margin-bottom: 10px;">
+            <h1 style="font-size: 32px; margin-bottom: 4px;">🚀 Modern Resume Analyzer</h1>
+            <p style="font-size: 16px; color: #4b5563;">
+                Upload your resume and get ATS-style scoring, skills match, salary insights, and tailored suggestions for your target role.
+            </p>
+        </div>
+        """
+    )
+    
+    with gr.Row():
+        with gr.Column(scale=1):
+            resume_file = gr.File(
+                label="📄 Upload Resume (PDF / DOCX / TXT)",
+                file_types=[".pdf", ".docx", ".txt"]
+            )
+            company_dd = gr.Dropdown(
+                choices=TOP_COMPANIES,
+                value="Select a company",
+                label="🏢 Target Company (optional)"
+            )
+            job_dd = gr.Dropdown(
+                choices=list(JOB_REQUIREMENTS.keys()),
+                value="Data Scientist",
+                label="🎯 Target Role / Profile"
+            )
+            years_exp = gr.Slider(
+                minimum=0,
+                maximum=20,
+                step=0.5,
+                value=0,
+                label="📆 Years of Experience"
+            )
+            expected_salary = gr.Number(
+                label="💰 Your Expected Salary (in LPA, optional)",
+                value=None
+            )
+            analyze_btn = gr.Button("Analyze Resume", variant="primary")
+        
+        with gr.Column(scale=1):
+            gauge_plot = gr.Plot(label="Overall Resume Score")
+            radar_plot = gr.Plot(label="Section-wise Analysis")
+    
+    with gr.Tab("📋 Contact & Basic Info"):
+        contact_html = gr.HTML()
+    
+    with gr.Tab("🧠 Skills & Section Scores"):
+        skills_html = gr.HTML()
+    
+    with gr.Tab("🛠 Improvements & Tips"):
+        improvements_html = gr.HTML()
+    
+    with gr.Tab("💰 Salary Insights"):
+        salary_html = gr.HTML()
+    
+    # Footer
+    gr.Markdown(
+        """
+        <div class="fade-in" style="text-align: center; margin-top: 25px; padding: 10px 0; color: #6b7280; font-size: 13px;">
+            Created by <strong>Ajit babu kakumanu</strong>
+        </div>
+        """
+    )
+
+    analyze_btn.click(
+        fn=analyze_resume,
+        inputs=[resume_file, company_dd, job_dd, years_exp, expected_salary],
+        outputs=[contact_html, skills_html, improvements_html, salary_html, radar_plot, gauge_plot]
+    )
+
+if __name__ == "__main__":
+    # For Colab you can use: demo.launch(share=True)
+    demo.launch()
